@@ -24,20 +24,29 @@ class TableCalibrator:
         
         self.model = YOLO(str(model_path))
         
-        # Загружаем изображение
-        frame = cv2.imread(image_path)
+        # Загружаем ОРИГИНАЛЬНОЕ изображение
+        self.original_image = cv2.imread(image_path)
         
-        if frame is None:
+        if self.original_image is None:
             raise ValueError(f"Не удалось загрузить изображение: {image_path}")
         
-        # Масштабируем если слишком большое
-        self.frame = self._resize_to_screen(frame)
+        # Масштабируем для отображения
+        self.frame = self._resize_to_screen(self.original_image)
         self.original_frame = self.frame.copy()
-        self.tables = []
+        
+        # Вычисляем коэффициенты масштабирования
+        self.scale_x = self.original_image.shape[1] / self.frame.shape[1]
+        self.scale_y = self.original_image.shape[0] / self.frame.shape[0]
+        
+        print(f"Оригинальное разрешение: {self.original_image.shape[1]}x{self.original_image.shape[0]}")
+        print(f"Отображаемое разрешение: {self.frame.shape[1]}x{self.frame.shape[0]}")
+        print(f"Коэффициент масштабирования: {self.scale_x:.3f}x, {self.scale_y:.3f}y")
+        
+        self.tables = []  # [(x1, y1, x2, y2), ...] в координатах ЭКРАНА
         self.current_box = None
         self.drawing = False
         self.mode = 'auto'
-    
+        
     def _resize_to_screen(self, frame, max_width=1920, max_height=1080):
         """Масштабирует изображение под размер экрана"""
         h, w = frame.shape[:2]
@@ -64,7 +73,7 @@ class TableCalibrator:
         """Автоматическая детекция столов с помощью YOLO"""
         print("Автоматическая детекция столов...")
         
-        # Детектируем столы и стулья
+        # Детектируем на ОТОБРАЖАЕМОМ кадре (для скорости)
         results = self.model(self.frame, classes=[60, 56], conf=0.3)  # table, chair
         
         tables_raw = []
@@ -207,7 +216,7 @@ class TableCalibrator:
             
             if x2 - x1 > 20 and y2 - y1 > 20:  # Минимальный размер
                 self.tables.append((x1, y1, x2, y2))
-                print(f"Добавлен стол {len(self.tables)}: ({x1}, {y1}, {x2}, {y2})")
+                print(f"Добавлен стол {len(self.tables)}: ({x1}, {y1}, {x2}, {y2}) [экранные координаты]")
             
             self.current_box = None
         
@@ -215,9 +224,10 @@ class TableCalibrator:
             # Правая кнопка - удаление ближайшего стола
             self._remove_nearest_table(x, y)
     
-    def _remove_nearest_table(self, x, y, threshold=50):
+    def _remove_nearest_table(self, x, y, threshold=100):
         """Удаляем ближайший стол к точке клика"""
         if not self.tables:
+            print("Нет столов для удаления")
             return
         
         min_dist = float('inf')
@@ -234,7 +244,9 @@ class TableCalibrator:
         
         if min_idx >= 0 and min_dist < threshold:
             removed = self.tables.pop(min_idx)
-            print(f"Удалён стол {min_idx + 1}: {removed}")
+            print(f"Удалён стол {min_idx}: {removed}")
+        else:
+            print(f"Не найден стол рядом с ({x}, {y}), ближайший на расстоянии {min_dist:.0f}px")
     
     def draw_tables(self):
         """Отрисовка всех столов на кадре"""
@@ -323,30 +335,37 @@ class TableCalibrator:
                     print("  Q - выход")
     
     def save_config(self, output_path: str = None):
-        """Сохранение конфигурации в JSON"""
+        """Сохранение конфигурации в JSON с координатами в ОРИГИНАЛЬНОМ масштабе"""
         if output_path is None:
             output_path = Path(__file__).parent.parent / "data/configs/tables_config.json"
-
-        # Читаем оригинальное изображение для размеров
-        original = cv2.imread(self.image_path)
-
+        
+        # Преобразуем координаты из экранных в оригинальные
+        tables_original_coords = []
+        for i, (x1, y1, x2, y2) in enumerate(self.tables):
+            orig_x1 = int(x1 * self.scale_x)
+            orig_y1 = int(y1 * self.scale_y)
+            orig_x2 = int(x2 * self.scale_x)
+            orig_y2 = int(y2 * self.scale_y)
+            
+            tables_original_coords.append({
+                'id': i,
+                'bbox': {
+                    'x1': orig_x1,
+                    'y1': orig_y1,
+                    'x2': orig_x2,
+                    'y2': orig_y2
+                }
+            })
+            
+            print(f"  Стол {i}: экранные ({x1}, {y1}, {x2}, {y2}) → оригинальные ({orig_x1}, {orig_y1}, {orig_x2}, {orig_y2})")
+        
         config = {
             'calibration_image': self.image_path,
             'frame_size': {
-                'width': original.shape[1],
-                'height': original.shape[0]
+                'width': self.original_image.shape[1],
+                'height': self.original_image.shape[0]
             },
-            'display_size': {
-                'width': self.frame.shape[1],
-                'height': self.frame.shape[0]
-            },
-            'tables': [
-                {
-                    'id': i,
-                    'bbox': {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2}
-                }
-                for i, (x1, y1, x2, y2) in enumerate(self.tables)
-            ]
+            'tables': tables_original_coords
         }
         
         output_path = Path(output_path)
@@ -357,7 +376,7 @@ class TableCalibrator:
         
         print(f"\nКонфигурация сохранена: {output_path}")
         
-        # Сохраняем изображение с визуализацией
+        # Сохраняем изображение с визуализацией (в экранных координатах для просмотра)
         viz_path = output_path.parent / "calibration_result.jpg"
         cv2.imwrite(str(viz_path), self.draw_tables())
         print(f"Визуализация сохранена: {viz_path}")
