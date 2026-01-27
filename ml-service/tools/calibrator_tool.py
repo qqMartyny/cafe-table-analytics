@@ -389,7 +389,7 @@ def main():
     
     if len(sys.argv) < 2:
         print("Usage: python calibrator_tool.py <image_path>")
-        print("Example: python calibrator_tool.py data/videos/cafe_frame.jpg")
+        print("Example: python calibrator_tool.py data/videos/video_frame.jpg")
         sys.exit(1)
     
     image_path = sys.argv[1]

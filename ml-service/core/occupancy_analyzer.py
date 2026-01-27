@@ -7,18 +7,18 @@ import numpy as np
 
 
 class OccupancyAnalyzer:
-    def __init__(self, tables_config, occupied_frames=3, free_frames=2):
+    def __init__(self, tables_config, occupied_frames=5, free_frames=20):  # 5 и 20!
         """
         Args:
             tables_config: dict с конфигурацией столов из JSON
-            occupied_frames: кол-во кадров подряд для определения занятости
-            free_frames: кол-во кадров подряд для определения освобождения
+            occupied_frames: кол-во кадров подряд для определения занятости (5 = 2.5 сек)
+            free_frames: кол-во кадров подряд для определения освобождения (20 = 10 сек)
         """
         self.tables = tables_config['tables']
         self.occupied_threshold = occupied_frames
         self.free_threshold = free_frames
         
-        # История состояний для каждого стола (последние N кадров)
+        # История состояний для каждого стола (последние 20 кадров)
         self.frame_history = {
             table['id']: deque(maxlen=max(occupied_frames, free_frames))
             for table in self.tables
@@ -33,30 +33,48 @@ class OccupancyAnalyzer:
     def analyze_frame(self, people_detections):
         """
         Анализ занятости столов на текущем кадре
-        
-        Args:
-            people_detections: список людей от PersonDetector
-        
-        Returns:
-            dict: {table_id: {'occupied': bool, 'people_count': int, 'state_changed': bool}}
         """
         results = {}
         
+        # Сначала определяем какой человек к какому столу относится
+        # Один человек может занимать только ОДИН стол
+        # Используем ЦЕНТР человека, а не площадь пересечения
+        person_to_table = {}  # {person_index: table_id}
+        
+        for person_idx, person in enumerate(people_detections):
+            cx, cy = person['center']  # центр человека
+            
+            assigned = False
+            
+            # Проверяем в какую зону стола попадает центр
+            for table in self.tables:
+                table_id = table['id']
+                bbox = table['bbox']
+                seating_zone = self._create_seating_zone(bbox)
+                
+                zx1, zy1, zx2, zy2 = seating_zone
+                
+                # Если центр человека внутри зоны стола
+                if zx1 <= cx <= zx2 and zy1 <= cy <= zy2:
+                    person_to_table[person_idx] = table_id
+                    assigned = True
+                    break  # Назначили - выходим
+            
+            # Если центр не попал ни в одну зону - не назначаем никуда
+            # (это проходящий мимо человек)
+        
+        # Теперь для каждого стола считаем людей
         for table in self.tables:
             table_id = table['id']
-            bbox = table['bbox']
             
-            # Создаём расширенную зону для детекции сидящих
-            seating_zone = self._create_seating_zone(bbox)
+            # Находим людей, назначенных этому столу
+            people_at_table = [
+                people_detections[idx] 
+                for idx, tid in person_to_table.items() 
+                if tid == table_id
+            ]
             
-            # Находим людей в зоне стола
-            people_in_zone = self._find_people_in_zone(
-                people_detections, 
-                seating_zone
-            )
-            
-            # Определяем есть ли сидящие люди
-            has_people = len(people_in_zone) > 0
+            has_people = len(people_at_table) > 0
             
             # Добавляем в историю
             self.frame_history[table_id].append(has_people)
@@ -68,24 +86,17 @@ class OccupancyAnalyzer:
             
             results[table_id] = {
                 'occupied': new_state,
-                'people_count': len(people_in_zone),
-                'raw_detections': len(people_in_zone),
+                'people_count': len(people_at_table),
                 'state_changed': previous_state != new_state,
-                'people_in_zone': people_in_zone  # для отладки
+                'people_in_zone': people_at_table,
+                'history': list(self.frame_history[table_id])
             }
         
         return results
     
-    def _create_seating_zone(self, table_bbox, margin=100):
+    def _create_seating_zone(self, table_bbox, margin=30):  # небольшой margin
         """
-        Создаём расширенную зону вокруг стола для детекции сидящих
-        
-        Args:
-            table_bbox: {'x1': int, 'y1': int, 'x2': int, 'y2': int}
-            margin: отступ в пикселях
-        
-        Returns:
-            (x1, y1, x2, y2)
+        Создаём зону стола с небольшим расширением
         """
         return (
             table_bbox['x1'] - margin,
@@ -93,30 +104,6 @@ class OccupancyAnalyzer:
             table_bbox['x2'] + margin,
             table_bbox['y2'] + margin
         )
-    
-    def _find_people_in_zone(self, people_detections, zone):
-        """
-        Находим людей, центр которых находится в зоне
-        
-        Args:
-            people_detections: список от PersonDetector
-            zone: (x1, y1, x2, y2)
-        
-        Returns:
-            list: отфильтрованный список людей
-        """
-        zx1, zy1, zx2, zy2 = zone
-        
-        people_in_zone = []
-        
-        for person in people_detections:
-            cx, cy = person['center']
-            
-            # Проверяем что центр человека в зоне
-            if zx1 <= cx <= zx2 and zy1 <= cy <= zy2:
-                people_in_zone.append(person)
-        
-        return people_in_zone
     
     def _apply_temporal_filter(self, table_id):
         """
