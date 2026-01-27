@@ -1,4 +1,3 @@
-
 # Python
 __pycache__/
 *.py[cod]
@@ -15,12 +14,23 @@ env/
 *.pth
 *.onnx
 
-# Data
+# Data files - НЕ коммитим
 *.mp4
 *.avi
 *.mov
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
 output/
 data/videos/
+data/configs/*.json
+data/configs/*.jpg
+
+# Но разрешаем README и примеры
+!data/videos/README.md
+!data/configs/README.md
 
 # IDE
 .vscode/
