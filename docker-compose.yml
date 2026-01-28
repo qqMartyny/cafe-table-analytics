@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  # PostgreSQL база данных
+  postgres:
+    image: postgres:15
+    container_name: cafe-postgres
+    environment:
+      POSTGRES_DB: cafe_analytics
+      POSTGRES_USER: cafe_user
+      POSTGRES_PASSWORD: cafe_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - cafe-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cafe_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Storage Service (Spring Boot)
+  storage-service:
+    build:
+      context: ./storage-service
+      dockerfile: Dockerfile
+    container_name: cafe-storage
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_URL: jdbc:postgresql://postgres:5432/cafe_analytics
+      DB_USERNAME: cafe_user
+      DB_PASSWORD: cafe_pass
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cafe-network
+
+  # ML Service (Python FastAPI)
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: cafe-ml
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./ml-service/data:/app/data  # Для моделей и видео
+      - ./ml-service/output:/app/output  # Для результатов
+    networks:
+      - cafe-network
+
+  # API Gateway (Spring Boot)
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: cafe-gateway
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      STORAGE_SERVICE_URL: http://storage-service:8081
+      ML_SERVICE_URL: http://ml-service:5000
+    ports:
+      - "8080:8080"  # Основной порт для фронтенда
+    depends_on:
+      - storage-service
+      - ml-service
+    networks:
+      - cafe-network
+
+volumes:
+  postgres_data:
+
+networks:
+  cafe-network:
+    driver: bridge
